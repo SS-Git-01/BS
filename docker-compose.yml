@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  database:
+    image: mysql:8.0
+    container_name: mysql_container
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root 
+      MYSQL_DATABASE: image_project
+    volumes:
+      - ./database:/docker-entrypoint-initdb.d 
+    ports:
+      - "3306:3306"
+
+  backend:
+    build: ./backend
+    container_name: flask_container
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend:/app  
+    depends_on:
+      - database
+    environment:
+      DATABASE_URL: mysql+pymysql://root:root@database/image_project
+
+  frontend:
+    image: node:22-alpine
+    container_name: vue_container
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "5173:5173"
+    command: sh -c "npm install && npm run dev -- --host"
