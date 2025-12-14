@@ -16,3 +16,5 @@ Thumbs.db
 .idea/
 
 mysql_data/
+
+uploads/
