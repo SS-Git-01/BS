@@ -19,12 +19,14 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./backend:/app  
+      - ./backend:/app
       - ./uploads:/app/uploads
+      - ./hf_cache:/root/.cache/huggingface
     depends_on:
       - database
     environment:
       DATABASE_URL: mysql+pymysql://root:root@database/image_project
+      HF_ENDPOINT: https://hf-mirror.com
 
   frontend:
     image: node:22-alpine
