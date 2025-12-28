@@ -1,21 +1,31 @@
+mysql_data/
+
+*.db
+*.sqlite
+*.sqlite3
+
 __pycache__/
 *.py[cod]
+*$py.class
 venv/
+.venv/
+env/
 .env
+
+uploads/*
+!uploads/.gitkeep
 
 node_modules/
 dist/
+*.local
 *.log
+npm-debug.log*
 
 .DS_Store
 Thumbs.db
-
 .vscode/
 .idea/
 
-mysql_data/
-uploads/
-!uploads/.gitkeep
-
-backend/models/*.pth
-backend/models/chinese-clip/*.bin
+*.bin
+*.pth
+*.onnx

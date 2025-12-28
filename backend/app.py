@@ -4,7 +4,7 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from functools import wraps
-from PIL import Image, ExifTags, ImageOps
+from PIL import Image, ExifTags, ImageOps, ImageEnhance
 from sqlalchemy.dialects.mysql import JSON
 import jwt
 import datetime
@@ -59,6 +59,8 @@ class ImageModel(db.Model):
     device = db.Column(db.String(100))
     capture_date = db.Column(db.DateTime)
     location = db.Column(db.String(255))
+    width = db.Column(db.Integer)
+    height = db.Column(db.Integer)
     ai_tags = db.Column(JSON)
     clip_embedding = db.Column(JSON)
     tags = db.relationship('Tag', secondary=image_tags, backref=db.backref('images', lazy='dynamic'))
@@ -237,13 +239,36 @@ def upload_image(current_user):
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S_")
         unique_filename = timestamp + filename
         save_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        
+        # 1. 先保存原始文件
         file.save(save_path)
         
+        # 2. 关键：先提取 Exif 信息（因为后续的 save 会清除 Exif）
+        exif = get_image_exif(save_path)
+        
+        final_loc = exif['location']
+        if exif.get('raw_gps'):
+            lat, lon = exif['raw_gps']
+            addr = get_address_from_coords(lat, lon)
+            if addr: final_loc = addr
+            
+        capture_date = exif['date'] if exif['date'] else datetime.datetime.now()
+
+        # 3. 图片处理：旋转矫正 + 获取分辨率
         img = Image.open(save_path)
         try:
+            # 根据 Exif 旋转图片
             img = ImageOps.exif_transpose(img)
         except:
             pass
+            
+        # 获取旋转后的真实宽高
+        img_w, img_h = img.size
+        
+        # 覆盖保存矫正后的图片
+        img.save(save_path, quality=95)
+        
+        # 4. 生成缩略图
         img.thumbnail((300, 300))
         thumb_filename = "thumb_" + unique_filename
         img.save(os.path.join(app.config['UPLOAD_FOLDER'], thumb_filename))
@@ -260,14 +285,7 @@ def upload_image(current_user):
         except:
             pass
 
-        exif = get_image_exif(save_path)
-        final_loc = exif['location']
-        if exif.get('raw_gps'):
-            lat, lon = exif['raw_gps']
-            addr = get_address_from_coords(lat, lon)
-            if addr: final_loc = addr
-            
-        capture_date = exif['date'] if exif['date'] else datetime.datetime.now()
+        # 6. 存入数据库
         new_image = ImageModel(
             user_id=current_user.id,
             filename=unique_filename,
@@ -277,19 +295,24 @@ def upload_image(current_user):
             device=exif['device'],
             capture_date=capture_date,
             location=final_loc,
+            width=img_w,
+            height=img_h,
             ai_tags=ai_tags,
             clip_embedding=clip_embedding
         )
         db.session.add(new_image)
         db.session.commit()
+        
         return jsonify({
             'message': 'Upload successful',
             'filename': unique_filename,
             'thumbnail': thumb_filename,
             'device': exif['device'],
-            'location': final_loc
+            'location': final_loc,
+            'resolution': f"{img_w}x{img_h}"
         }), 201
-    except Exception:
+    except Exception as e:
+        print(f"Upload Error: {e}")
         return jsonify({'message': 'Upload failed'}), 500
 
 @app.route('/api/images', methods=['GET'])
@@ -298,20 +321,25 @@ def get_user_images(current_user):
     query = request.args.get('q', '').strip()
     images = ImageModel.query.filter_by(user_id=current_user.id).order_by(ImageModel.capture_date.desc()).all()
     
+    # 辅助函数：格式化图片数据
+    def format_image(img, score=None):
+        data = {
+            'id': img.id,
+            'filename': img.filename,
+            'thumbnail': img.thumbnail_path,
+            'device': img.device,
+            'capture_date': img.capture_date.strftime('%Y-%m-%d %H:%M:%S') if img.capture_date else None,
+            'location': img.location,
+            'tags': [t.tag_name for t in img.tags],
+            'ai_tags': img.ai_tags,
+            'resolution': f"{img.width}x{img.height}" if img.width else "未知"
+        }
+        if score:
+            data['debug_score'] = f"{score:.3f}"
+        return data
+    
     if not query:
-        output = []
-        for img in images:
-            output.append({
-                'id': img.id,
-                'filename': img.filename,
-                'thumbnail': img.thumbnail_path,
-                'device': img.device,
-                'capture_date': img.capture_date.strftime('%Y-%m-%d %H:%M:%S') if img.capture_date else None,
-                'location': img.location,
-                'tags': [t.tag_name for t in img.tags],
-                'ai_tags': img.ai_tags
-            })
-        return jsonify(output), 200
+        return jsonify([format_image(img) for img in images]), 200
 
     print(f"DEBUG: Searching for '{query}'...", flush=True)
     text_vector = get_text_embedding(query)
@@ -328,6 +356,13 @@ def get_user_images(current_user):
             for t in img.ai_tags:
                 if query.lower() in t.get('label', '').lower(): basic_match = True
         
+        if img.tags:
+            for t in img.tags:
+                if query.lower() in t.tag_name.lower(): 
+                    basic_match = True
+                    score += 0.8  
+                    print(f"DEBUG: '{img.filename}' Hit User Tag '{t.tag_name}'", flush=True)
+
         if basic_match:
             score += 0.5
             print(f"DEBUG: '{img.filename}' Hit Basic Match (+0.5)", flush=True)
@@ -346,20 +381,7 @@ def get_user_images(current_user):
             
     scored_images.sort(key=lambda x: x[0], reverse=True)
     
-    output = []
-    for score, img in scored_images:
-        output.append({
-            'id': img.id,
-            'filename': img.filename,
-            'thumbnail': img.thumbnail_path,
-            'device': img.device,
-            'capture_date': img.capture_date.strftime('%Y-%m-%d %H:%M:%S') if img.capture_date else None,
-            'location': img.location,
-            'tags': [t.tag_name for t in img.tags],
-            'ai_tags': img.ai_tags,
-            'debug_score': f"{score:.3f}"
-        })
-        
+    output = [format_image(img, score) for score, img in scored_images]
     print(f"DEBUG: Found {len(output)} results.", flush=True)
     return jsonify(output), 200
 
@@ -378,6 +400,81 @@ def add_tag(current_user):
         image.tags.append(tag)
         db.session.commit()
     return jsonify({'message': 'Tag added'}), 200
+
+@app.route('/api/tags', methods=['DELETE'])
+@token_required
+def delete_tag(current_user):
+    data = request.json
+    image_id, tag_name = data.get('image_id'), data.get('tag_name')
+    
+    image = ImageModel.query.filter_by(id=image_id, user_id=current_user.id).first()
+    if not image: 
+        return jsonify({'message': 'Image not found'}), 404
+        
+    tag = Tag.query.filter_by(tag_name=tag_name).first()
+    if tag and tag in image.tags:
+        image.tags.remove(tag)
+        db.session.commit()
+        return jsonify({'message': 'Tag removed'}), 200
+    
+    return jsonify({'message': 'Tag not associated'}), 400
+
+@app.route('/api/images/<int:image_id>/edit', methods=['PUT'])
+@token_required
+def edit_image(current_user, image_id):
+    image = ImageModel.query.filter_by(id=image_id, user_id=current_user.id).first()
+    if not image: return jsonify({'message': 'Image not found'}), 404
+    
+    data = request.json
+    crop_data = data.get('crop')
+    rotate = data.get('rotate', 0)
+    brightness = data.get('brightness', 1.0)
+    contrast = data.get('contrast', 1.0)
+
+    try:
+        img = Image.open(image.file_path)
+        
+        if rotate != 0:
+            img = img.rotate(-rotate, expand=True)
+
+        if crop_data:
+            real_w, real_h = img.size
+            x = max(0, int(crop_data['x']))
+            y = max(0, int(crop_data['y']))
+            w = int(crop_data['width'])
+            h = int(crop_data['height'])
+            if x + w > real_w: w = real_w - x
+            if y + h > real_h: h = real_h - y
+            if w > 0 and h > 0:
+                img = img.crop((x, y, x + w, y + h))
+
+        if brightness != 1.0:
+            enhancer = ImageEnhance.Brightness(img)
+            img = enhancer.enhance(brightness)
+
+        if contrast != 1.0:
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(contrast)
+
+        img.save(image.file_path, quality=95)
+
+        # 更新数据库中的宽高
+        image.width, image.height = img.size
+        image.file_size = os.path.getsize(image.file_path)
+
+        img.thumbnail((300, 300))
+        img.save(os.path.join(app.config['UPLOAD_FOLDER'], image.thumbnail_path))
+        
+        db.session.commit()
+
+        return jsonify({
+            'message': 'Image edited successfully',
+            'resolution': f"{image.width}x{image.height}"
+        }), 200
+
+    except Exception as e:
+        print(f"Edit Error: {e}")
+        return jsonify({'message': 'Failed to process image'}), 500
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
