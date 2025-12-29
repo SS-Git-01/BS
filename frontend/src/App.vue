@@ -37,79 +37,105 @@
     <div v-else class="main-content">
       
       <van-sticky :offset-top="46">
-        <van-search 
-          v-model="searchQuery" 
-          show-action 
-          placeholder="🔍 搜地点 / 标签 (如: 生日, mask)" 
-          @search="onSearch"
-          @clear="onSearch"
-        >
-          <template #action>
-            <div @click="onSearch">搜索</div>
-          </template>
-        </van-search>
+        <div class="search-bar-container">
+          <van-search 
+            v-model="searchQuery" 
+            show-action 
+            shape="round"
+            background="transparent"
+            placeholder="🔍 搜地点 / 标签 (如: 生日, mask)" 
+            @search="onSearch"
+            @clear="onSearch"
+          >
+            <template #action>
+              <div @click="onSearch" class="search-btn">搜索</div>
+            </template>
+          </van-search>
+        </div>
       </van-sticky>
 
-      <van-cell-group inset title="上传新照片" style="margin-top: 10px;">
-        <div class="upload-box">
-          <van-uploader :after-read="afterRead" v-model="fileList" :max-count="1" upload-text="点击上传" />
-          <p class="tip-text">支持自动提取拍摄时间与地点 (Exif)</p>
-        </div>
-      </van-cell-group>
+      <div class="action-panel">
+         <van-uploader 
+            :after-read="afterRead" 
+            v-model="fileList" 
+            multiple 
+            :max-count="9" 
+            accept="image/*"
+          >
+           <van-button icon="plus" type="primary" round size="small">上传照片</van-button>
+         </van-uploader>
+         <span class="upload-tip">支持 Exif 自动识别</span>
+      </div>
 
-      <van-divider>我的照片库 ({{ images.length }} 张)</van-divider>
-      <van-empty v-if="images.length === 0" description="没有找到照片哦~" />
+      <van-list
+        v-model:loading="loading"
+        :finished="finished"
+        finished-text="没有更多了"
+        @load="onLoad"
+      >
+        <van-empty v-if="images.length === 0 && !loading" description="没有找到照片哦~" />
 
-      <van-grid :column-num="2" gutter="10" class="image-grid">
-        <van-grid-item v-for="(img, index) in images" :key="img.id" class="grid-item-wrapper">
-          <van-image
-            class="hover-scale-img grid-thumb"
-            :src="getImageUrl(img.thumbnail)" 
-            height="150" 
-            fit="contain"
-            @click="openPreview(index)" 
-          />
-          
-          <div class="action-btns">
-            <div class="circle-btn edit" @click.stop="openEditor(img)">
-              <van-icon name="edit" />
-            </div>
-            <div class="circle-btn del" @click.stop="confirmDelete(img)">
-              <van-icon name="delete-o" />
-            </div>
-          </div>
-
-          <div class="image-info">
-            <div class="info-row">📅 {{ formatDate(img.capture_date) }}</div>
-            <div class="info-row" v-if="img.resolution && img.resolution !== '未知'">📐 {{ img.resolution }}</div>
-            <div class="info-row" v-if="img.device && img.device !== 'Unknown'">📱 {{ img.device }}</div>
-            <div class="info-row" v-if="img.location && img.location !== 'Unknown'">📍 {{ img.location }}</div>
+        <div class="masonry-layout">
+          <div v-for="(img, index) in images" :key="img.id" class="pin-card" @click="openPreview(index)">
             
-            <div class="tags-row">
-              <van-tag 
-                v-for="(tag, tIndex) in img.tags" 
-                :key="'u'+tIndex" 
-                class="user-tag" 
-                closeable 
-                size="medium"
-                type="primary"
-                plain
-                @close.stop="handleRemoveTag(img, tag)"
-              >
-                {{ tag }}
-              </van-tag>
+            <div class="pin-image-wrapper">
+              <img :src="getImageUrl(img.thumbnail || img.filename)" :alt="img.filename" loading="lazy" />
               
-              <span v-for="(tag, tIndex) in (img.ai_tags || []).slice(0, 3)" :key="'a'+tIndex" class="ai-tag">
-                🤖 {{ tag.label }}
-              </span>
-              <van-icon name="add-o" class="add-tag-btn" @click.stop="openAddTagDialog(img)" />
+              <div class="pin-overlay">
+                <button class="pin-btn edit" @click.stop="openEditor(img)">
+                  <van-icon name="edit" />
+                </button>
+                <button class="pin-btn del" @click.stop="confirmDelete(img)">
+                  <van-icon name="delete-o" />
+                </button>
+              </div>
             </div>
+
+            <div class="pin-info">
+              <div class="pin-tags" v-if="img.ai_tags && img.ai_tags.length">
+                <span v-for="(tag, tIndex) in img.ai_tags.slice(0, 3)" :key="'a'+tIndex" class="tag-pill ai">
+                  {{ tag.label }}
+                </span>
+              </div>
+
+              <div class="pin-tags user-tags-area">
+                <span 
+                  v-for="(tag, tIndex) in img.tags" 
+                  :key="'u'+tIndex" 
+                  class="tag-pill user"
+                >
+                  {{ tag }}
+                  <van-icon name="cross" class="tag-close" @click.stop="handleRemoveTag(img, tag)" />
+                </span>
+                <span class="tag-add-btn" @click.stop="openAddTagDialog(img)">+</span>
+              </div>
+              
+              <div class="pin-meta">
+                <div class="meta-row location" v-if="img.location && img.location !== 'Unknown'">
+                  <van-icon name="location-o" /> {{ img.location }}
+                </div>
+                <div class="meta-row date">
+                   📅 {{ formatDate(img.capture_date).split(' ')[0] }}
+                </div>
+              </div>
+
+              <div class="pin-tech-info">
+                <span v-if="img.resolution && img.resolution !== '未知'" class="tech-item">
+                  <van-icon name="photo-o" /> {{ img.resolution }}
+                </span>
+                <span v-if="img.device && img.device !== 'Unknown'" class="tech-item">
+                  <van-icon name="desktop-o" /> {{ img.device }}
+                </span>
+              </div>
+
+            </div>
+
           </div>
-        </van-grid-item>
-      </van-grid>
+        </div>
+      </van-list>
 
       <div style="margin: 30px 20px;">
-        <van-button type="danger" block round plain @click="logout">退出登录</van-button>
+        <van-button color="#efefef" block round @click="logout" style="color: #333; font-weight: bold;">退出登录</van-button>
       </div>
 
       <van-image-preview
@@ -143,6 +169,7 @@
             v-model="newTagName"
             placeholder="请输入标签名（如：生日、旅游）"
             border
+            clearable
           />
         </van-cell-group>
       </van-dialog>
@@ -168,22 +195,20 @@
           <div class="controls-area">
             <div class="control-row">
               <span>旋转:</span>
-              <van-button size="small" icon="replay" @click="rotateImage">90°</van-button>
+              <van-button size="small" icon="replay" round @click="rotateImage">90°</van-button>
             </div>
-            
             <div class="control-row">
               <span>亮度:</span>
-              <van-slider v-model="editParams.brightness" :min="0.5" :max="1.5" :step="0.1" style="width: 70%" />
+              <van-slider v-model="editParams.brightness" :min="0.5" :max="1.5" :step="0.1" style="width: 70%" active-color="#1989fa" />
             </div>
-
             <div class="control-row">
               <span>对比:</span>
-              <van-slider v-model="editParams.contrast" :min="0.5" :max="1.5" :step="0.1" style="width: 70%" />
+              <van-slider v-model="editParams.contrast" :min="0.5" :max="1.5" :step="0.1" style="width: 70%" active-color="#1989fa" />
             </div>
           </div>
         </div>
       </van-dialog>
-      </div>
+    </div>
   </div>
 </template>
 
@@ -200,6 +225,10 @@ const fileList = ref([]);
 const images = ref([]);
 
 const searchQuery = ref('');
+
+const loading = ref(false);
+const finished = ref(false);
+const page = ref(1);
 
 const hostname = window.location.hostname; 
 const API_BASE = `http://${hostname}:5000/api`;
@@ -239,12 +268,18 @@ const openPreview = (index) => {
   nextTick(() => {
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('wheel', handleWheel, { passive: false });
+    setTimeout(() => {
+        resetZoom();
+    }, 50);
   });
 };
 const resetZoom = () => {
   currentZoom.value = 1;
   const allImages = document.querySelectorAll('.van-image-preview__image');
-  allImages.forEach(img => { img.style.transform = ''; img.style.transition = 'transform 0.3s ease-out'; });
+  allImages.forEach(img => {
+      img.style.transform = 'scale(1) translate(0, 0)';
+      img.style.transition = 'transform 0.3s ease-out';
+  });
 };
 const onChange = (newIndex) => { previewIndex.value = newIndex; resetZoom(); };
 const prevImage = () => { if (previewRef.value) { const newIndex = (previewIndex.value - 1 + images.value.length) % images.value.length; previewRef.value.swipeTo(newIndex); } };
@@ -263,19 +298,46 @@ const handleWheel = (e) => {
 };
 watch(showPreview, (val) => { if (!val) { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('wheel', handleWheel); } });
 
-const fetchImages = async () => {
+const onLoad = async () => {
   if (!token.value) return;
+  
   try {
     const res = await axios.get(`${API_BASE}/images`, { 
-      params: { q: searchQuery.value }, 
+      params: { 
+        q: searchQuery.value,
+        page: page.value,
+        limit: 10 
+      }, 
       headers: { 'Authorization': `Bearer ${token.value}` } 
     });
-    images.value = res.data;
-  } catch (err) { if (err.response && err.response.status === 401) logout(); }
+    
+    if (res.data.items) {
+      images.value.push(...res.data.items);
+    }
+    
+    page.value++;
+    loading.value = false;
+    
+    if (!res.data.has_next) {
+      finished.value = true;
+    }
+  } catch (err) {
+    loading.value = false;
+    finished.value = true;
+    if (err.response && err.response.status === 401) logout();
+  }
+};
+
+const resetList = () => {
+  page.value = 1;
+  images.value = [];
+  finished.value = false;
+  loading.value = true; 
+  onLoad(); 
 };
 
 const onSearch = () => {
-  fetchImages(); 
+  resetList(); 
 };
 
 const confirmDelete = (img) => {
@@ -284,22 +346,89 @@ const confirmDelete = (img) => {
       try {
         await axios.delete(`${API_BASE}/images/${img.id}`, { headers: { 'Authorization': `Bearer ${token.value}` } });
         showSuccessToast('删除成功');
-        fetchImages();
+        const idx = images.value.findIndex(i => i.id === img.id);
+        if (idx !== -1) images.value.splice(idx, 1);
       } catch (err) { showFailToast('删除失败'); }
     }).catch(() => {});
 };
 
-const afterRead = async (file) => {
-  file.status = 'uploading';
+const pollImageStatus = (imageId) => {
+  let attempts = 0;
+  const maxAttempts = 10; 
+  
+  const interval = setInterval(async () => {
+    attempts++;
+    try {
+      const res = await axios.get(`${API_BASE}/images/${imageId}`, {
+        headers: { 'Authorization': `Bearer ${token.value}` }
+      });
+      
+      const imgData = res.data;
+      
+      if (imgData.ai_tags && imgData.ai_tags.length > 0) {
+        clearInterval(interval);
+        
+        const targetImg = images.value.find(i => i.id === imageId);
+        if (targetImg) {
+          targetImg.ai_tags = imgData.ai_tags;
+          showSuccessToast('AI 分析完成！');
+        }
+      } else {
+        console.log(`Waiting for AI... Attempt ${attempts}`);
+      }
+      
+      if (attempts >= maxAttempts) {
+        clearInterval(interval);
+        console.log('Stop polling (timeout)');
+      }
+      
+    } catch (err) {
+      clearInterval(interval); 
+    }
+  }, 2000); 
+};
+
+const uploadOneFile = async (item) => {
+  item.status = 'uploading';
+  item.message = '上传中...';
+
   const formData = new FormData();
-  formData.append('file', file.file);
+  formData.append('file', item.file);
+
   try {
-    await axios.post(`${API_BASE}/upload`, formData, { headers: { 'Content-Type': 'multipart/form-data', 'Authorization': `Bearer ${token.value}` } });
-    file.status = 'done';
-    showSuccessToast('上传成功！');
-    setTimeout(() => { fileList.value = []; }, 1000);
-    fetchImages();
-  } catch (err) { file.status = 'failed'; showFailToast('上传失败'); }
+    const res = await axios.post(`${API_BASE}/upload`, formData, { 
+      headers: { 
+        'Content-Type': 'multipart/form-data', 
+        'Authorization': `Bearer ${token.value}` 
+      } 
+    });
+    
+    item.status = 'done';
+    item.message = '成功';
+    
+    const newImageId = res.data.id;
+    
+    if (newImageId) {
+      pollImageStatus(newImageId);
+    }
+    
+  } catch (err) {
+    item.status = 'failed';
+    item.message = '失败';
+    showFailToast('部分图片上传失败');
+  }
+};
+
+const afterRead = async (items) => {
+  const files = Array.isArray(items) ? items : [items];
+  await Promise.all(files.map(file => uploadOneFile(file)));
+  setTimeout(() => {
+    fileList.value = fileList.value.filter(item => item.status === 'failed');
+    if (fileList.value.length === 0) {
+      showSuccessToast('所有上传完成');
+      resetList(); 
+    }
+  }, 1000);
 };
 
 const onLogin = async (values) => {
@@ -308,7 +437,7 @@ const onLogin = async (values) => {
     token.value = res.data.token;
     localStorage.setItem('token', res.data.token);
     showSuccessToast('登录成功');
-    fetchImages();
+    resetList(); 
   } catch (err) { showFailToast(err.response?.data?.message || '登录失败'); }
 };
 
@@ -416,7 +545,7 @@ const submitEdit = async () => {
   const cropData = cropper.getData(); 
 
   try {
-    const res = await axios.put(`${API_BASE}/images/${currentEditingImage.value.id}/edit`, {
+    await axios.put(`${API_BASE}/images/${currentEditingImage.value.id}/edit`, {
       crop: {
         x: cropData.x,
         y: cropData.y,
@@ -433,15 +562,19 @@ const submitEdit = async () => {
     showSuccessToast('编辑成功');
     showEditDialog.value = false;
     const timestamp = new Date().getTime();
-    const targetImage = images.value.find(img => img.id === currentEditingImage.value.id);
     
-    if (targetImage) {
-      targetImage.thumbnail = targetImage.thumbnail.split('?')[0] + `?t=${timestamp}`;
-      targetImage.filename = targetImage.filename.split('?')[0] + `?t=${timestamp}`;
-      if (res.data.resolution) {
-        targetImage.resolution = res.data.resolution;
+    const targetImg = images.value.find(i => i.id === currentEditingImage.value.id);
+    
+    if (targetImg) {
+      const rawFilename = targetImg.filename.split('?')[0];
+      targetImg.filename = `${rawFilename}?t=${timestamp}`;
+      
+      if (targetImg.thumbnail) {
+         const rawThumb = targetImg.thumbnail.split('?')[0];
+         targetImg.thumbnail = `${rawThumb}?t=${timestamp}`;
       }
     }
+
 
   } catch (err) {
     showFailToast('编辑失败');
@@ -460,53 +593,216 @@ watch(showEditDialog, (val) => {
   }
 });
 
-onMounted(() => { if (token.value) fetchImages(); });
+onMounted(() => { 
+  if (token.value) {
+  }
+});
 </script>
 
 <style scoped>
 .auth-container { padding: 40px 20px; text-align: center; }
 .logo-area { margin-bottom: 40px; }
 .logo-area h1 { font-size: 60px; margin: 0; }
-.main-content { padding-bottom: 50px; background-color: #f7f8fa; min-height: 100vh; }
-.upload-box { text-align: center; padding: 20px; background: #fff; }
-.tip-text { font-size: 12px; color: #996; margin-top: 8px; }
-.image-grid { padding: 10px; }
-.image-info { padding: 8px; font-size: 12px; color: #333; background: #fff; width: 100%; }
-.info-row { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 4px; }
-.grid-item-wrapper { position: relative; }
+.main-content { padding-bottom: 50px; background-color: #ffffff; min-height: 100vh; }
 
-/* 缩略图样式优化：添加背景色以配合 contain 模式 */
-.grid-thumb {
-  background-color: #ebedf0;
+.search-bar-container { padding: 10px 16px; background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
+.search-btn { font-weight: bold; color: #333; }
+
+.action-panel { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; }
+.upload-tip { font-size: 12px; color: #999; }
+
+/* 瀑布流 Masonry 布局核心 */
+.masonry-layout {
+  column-count: 5;
+  column-gap: 16px;
+  padding: 0 16px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
-.action-btns { position: absolute; top: 5px; right: 5px; display: flex; gap: 8px; z-index: 10; }
-.circle-btn { width: 24px; height: 24px; border-radius: 4px; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; }
-.circle-btn.del { background: rgba(0, 0, 0, 0.5); }
-.circle-btn.del:hover { background: rgba(255, 0, 0, 0.8); }
-.circle-btn.edit { background: rgba(0, 0, 0, 0.5); }
-.circle-btn.edit:hover { background: rgba(25, 137, 250, 0.8); }
+.pin-card {
+  break-inside: avoid;
+  margin-bottom: 16px;
+  border-radius: 16px;
+  overflow: hidden;
+  cursor: zoom-in;
+  /* 移除阴影或使用极淡阴影，保持干净 */
+  transition: transform 0.2s ease;
+}
 
+.pin-card:hover {
+  transform: translateY(-2px);
+}
+
+.pin-image-wrapper {
+  position: relative;
+  width: 100%;
+  border-radius: 16px;
+  overflow: hidden;
+  background-color: #f5f5f5; /* 占位色 */
+}
+
+.pin-image-wrapper img {
+  width: 100%;
+  height: auto;
+  display: block; /* 消除底部空隙 */
+}
+
+/* 遮罩层与按钮 */
+.pin-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.2);
+  opacity: 0;
+  transition: opacity 0.2s;
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px;
+  gap: 8px;
+}
+
+.pin-card:hover .pin-overlay {
+  opacity: 1;
+}
+
+.pin-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.9);
+  color: #333;
+  transition: transform 0.1s;
+}
+
+.pin-btn:hover {
+  transform: scale(1.1);
+  background: white;
+}
+.pin-btn.del:hover { color: red; }
+
+/* 信息区域 */
+.pin-info {
+  padding: 8px 4px;
+}
+
+.pin-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.tag-pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.tag-pill.ai {
+  background-color: #f0f0f0;
+  color: #111;
+}
+
+.tag-pill.user {
+  background-color: #e6f7ff;
+  color: #1890ff;
+  display: inline-flex;
+  align-items: center;
+}
+
+.tag-close { margin-left: 4px; font-size: 10px; cursor: pointer; }
+
+.tag-add-btn {
+  font-size: 14px;
+  color: #999;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 20px;
+}
+
+.pin-meta {
+  display: flex;
+  flex-direction: column; /* 关键：改为垂直堆叠 */
+  align-items: flex-start; /* 左对齐 */
+  gap: 6px; /* 地点和日期之间的间距 */
+  font-size: 11px;
+  color: #888;
+  margin-top: 8px;
+}
+
+.meta-row { display: flex; align-items: center; gap: 2px; }
+
+.meta-row.location {
+  white-space: normal; /* 允许换行 */
+  overflow: visible;   /* 显示全部内容 */
+  text-overflow: clip; /* 去掉省略号 */
+  max-width: 100%;     /* 占满宽度 */
+  line-height: 1.4;    /* 增加行高，多行时更好看 */
+  word-break: break-all; /* 防止纯英文地址不换行 */
+}
+
+/* 新增：技术参数行 (分辨率、设备) */
+.pin-tech-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed #eee; /* 加条虚线分隔，更清晰 */
+  font-size: 10px;
+  color: #999;
+}
+
+.tech-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background-color: #f9f9f9;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+/* 响应式调整 */
+@media (max-width: 1200px) {
+  .masonry-layout { column-count: 4; }
+}
+
+@media (max-width: 900px) {
+  .masonry-layout { column-count: 3; }
+}
+
+@media (max-width: 600px) {
+  .masonry-layout { column-count: 2; column-gap: 10px; padding: 0 10px; }
+  .pin-overlay { opacity: 1; background: transparent; align-items: flex-start; } 
+  .pin-btn { background: rgba(0,0,0,0.5); color: white; width: 28px; height: 28px; }
+  .pin-info { padding: 6px 2px; }
+}
+
+/* 预览与编辑相关样式保持不变 */
 .nav-btn { position: fixed; top: 50%; transform: translateY(-50%); width: 56px; height: 56px; background-color: rgba(30, 30, 30, 0.4); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 32px; cursor: pointer; transition: all 0.2s; z-index: 9999; backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.1); user-select: none; }
 .nav-btn:hover { background-color: rgba(255, 255, 255, 0.2); transform: translateY(-50%) scale(1.1); }
 .nav-btn.left { left: 40px; }
 .nav-btn.right { right: 40px; }
 .zoom-tip { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); color: rgba(255, 255, 255, 0.7); background: rgba(0, 0, 0, 0.5); padding: 5px 15px; border-radius: 20px; font-size: 12px; pointer-events: none; z-index: 9999; }
-@media (hover: hover) and (pointer: fine) { .hover-scale-img >>> .van-image__img { transition: transform 0.3s ease; } .hover-scale-img:hover >>> .van-image__img { transform: scale(1.1); } }
-.tags-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; align-items: center; }
-.ai-tag { font-size: 10px; background-color: #f0f9eb; color: #67c23a; padding: 1px 4px; border-radius: 4px; border: 1px solid #e1f3d8; display: inline-block; }
-.user-tag { font-size: 10px; margin-right: 4px; margin-bottom: 4px; }
-.add-tag-btn { color: #1989fa; font-size: 14px; cursor: pointer; padding: 2px; }
 </style>
 
 <style>
+/* Cropper Global Styles */
 .editor-container { 
   background-color: #fff;
   padding: 10px;
   overflow-y: auto;
   max-height: 80vh; 
 }
-
 .cropper-stage { 
   height: 50vh; 
   max-height: 500px;
@@ -517,7 +813,6 @@ onMounted(() => { if (token.value) fetchImages(); });
   border-radius: 8px;
   overflow: hidden;
 }
-
 .cropper-box {
   position: absolute;
   top: 20px;
@@ -527,40 +822,26 @@ onMounted(() => { if (token.value) fetchImages(); });
   background: transparent;
   font-size: 0;
 }
-
-.cropper-box > img {
-  max-width: 100%;
-  display: block;
-}
-
-.controls-area { 
-  margin-top: 15px; 
-  padding: 0 10px; 
-}
-
-.control-row { 
-  display: flex; 
-  align-items: center; 
-  margin-bottom: 12px; 
-  gap: 10px; 
-  font-size: 14px; 
-  color: #333; 
-}
-
-.cropper-container {
+.van-image-preview__image {
   width: 100% !important;
   height: 100% !important;
-}
-
-.cropper-canvas img,
-.cropper-view-box img {
+  object-fit: contain !important;
   max-width: none !important;
   max-height: none !important;
-  filter: brightness(var(--b, 1)) contrast(var(--c, 1));
-  transition: filter 0.1s;
+  margin: 0 !important;
 }
 
-.cropper-bg {
-  background-image: none !important;
+.van-image-preview__swipe-item {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  overflow: hidden !important;
 }
+
+.cropper-box > img { max-width: 100%; display: block; }
+.controls-area { margin-top: 15px; padding: 0 10px; }
+.control-row { display: flex; align-items: center; margin-bottom: 12px; gap: 10px; font-size: 14px; color: #333; }
+.cropper-container { width: 100% !important; height: 100% !important; }
+.cropper-canvas img, .cropper-view-box img { max-width: none !important; max-height: none !important; filter: brightness(var(--b, 1)) contrast(var(--c, 1)); transition: filter 0.1s; }
+.cropper-bg { background-image: none !important; }
 </style>

@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, current_app
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -11,10 +11,13 @@ import datetime
 import os
 import re
 import math
+import threading
+import requests
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 import json
 from ai_classify import analyze_image, get_image_embedding, get_text_embedding
+from llm_search import extract_search_params
 
 app = Flask(__name__)
 CORS(app)
@@ -22,7 +25,9 @@ CORS(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///local.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = 'your_secret_key_here'
-UPLOAD_FOLDER = '/app/uploads'
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 if not os.path.exists(UPLOAD_FOLDER):
@@ -109,51 +114,77 @@ def _convert_to_degrees(value):
     except Exception:
         return 0.0
 
+def transform_lat(x, y):
+    ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * math.sqrt(abs(x))
+    ret += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    ret += (20.0 * math.sin(y * math.pi) + 40.0 * math.sin(y / 3.0 * math.pi)) * 2.0 / 3.0
+    ret += (160.0 * math.sin(y / 12.0 * math.pi) + 320 * math.sin(y * math.pi / 30.0)) * 2.0 / 3.0
+    return ret
+
+def transform_lon(x, y):
+    ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * math.sqrt(abs(x))
+    ret += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+    ret += (20.0 * math.sin(x * math.pi) + 40.0 * math.sin(x / 3.0 * math.pi)) * 2.0 / 3.0
+    ret += (150.0 * math.sin(x / 12.0 * math.pi) + 300.0 * math.sin(x / 30.0 * math.pi)) * 2.0 / 3.0
+    return ret
+
+def wgs84_to_gcj02(lat, lon):
+    """
+    将 GPS 原始坐标 (WGS-84) 转换为 高德/腾讯 地图坐标 (GCJ-02)
+    否则在国内会有几百米的偏移
+    """
+    a = 6378245.0
+    ee = 0.00669342162296594323
+    
+    if lon < 72.004 or lon > 137.8347 or lat < 0.8293 or lat > 55.8271:
+        return lat, lon # 不在国内，直接返回
+        
+    dLat = transform_lat(lon - 105.0, lat - 35.0)
+    dLon = transform_lon(lon - 105.0, lat - 35.0)
+    radLat = lat / 180.0 * math.pi
+    magic = math.sin(radLat)
+    magic = 1 - ee * magic * magic
+    sqrtMagic = math.sqrt(magic)
+    dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * math.pi)
+    dLon = (dLon * 180.0) / (a / sqrtMagic * math.cos(radLat) * math.pi)
+    mgLat = lat + dLat
+    mgLon = lon + dLon
+    return mgLat, mgLon
+
+AMAP_KEY = 'da3e4171bbbee5c2d2d88c127dbad75d' 
+
 def get_address_from_coords(lat, lon):
     try:
-        url = "https://nominatim.openstreetmap.org/reverse"
-        params = {
-            'format': 'json',
-            'lat': lat,
-            'lon': lon,
-            'zoom': 18,
-            'addressdetails': 1,
-            'accept-language': 'zh-CN'
-        }
-        full_url = f"{url}?{urlencode(params)}"
-        req = Request(full_url, headers={'User-Agent': 'MyStudentProject/1.0'})
-        with urlopen(req, timeout=3) as response:
-            data = json.loads(response.read().decode())
-            address = data.get('address', {})
-            country = address.get('country', '')
-            province = address.get('state', '')
-            city = address.get('city', '') or \
-                   address.get('municipality', '') or \
-                   address.get('prefecture', '') or \
-                   address.get('state_district', '') or \
-                   address.get('region', '') or \
-                   address.get('administrative', '')
-            district = address.get('district', '') or \
-                       address.get('county', '') or \
-                       address.get('city_district', '')
-            town = address.get('town', '') or \
-                   address.get('suburb', '') or \
-                   address.get('street', '') or \
-                   address.get('village', '') or \
-                   address.get('subdistrict', '')
-            parts = []
-            if country: parts.append(country)
-            if province: parts.append(province)
-            if city and city not in parts:
-                parts.append(city)
-            if district and district not in parts:
-                parts.append(district)
-            if town and town not in parts:
-                parts.append(town)
-            return " ".join(parts)
-    except Exception:
-        return None
+        if not AMAP_KEY or AMAP_KEY == '你的高德Web服务Key填在这里':
+            print("Error: Amap Key not configured.")
+            return None
 
+        g_lat, g_lon = wgs84_to_gcj02(lat, lon)
+        
+        location_str = f"{g_lon:.6f},{g_lat:.6f}"
+        url = "https://restapi.amap.com/v3/geocode/regeo"
+        params = {
+            'key': AMAP_KEY,
+            'location': location_str,
+            'extensions': 'base', 
+            'radius': 1000,
+            'roadlevel': 0
+        }
+        
+        resp = requests.get(url, params=params, timeout=3)
+        data = resp.json()
+    
+        if data.get('status') == '1' and data.get('regeocode'):
+            address = data['regeocode']['formatted_address']
+            return address
+        else:
+            print(f"Amap Error: {data.get('info')}")
+            return None
+            
+    except Exception as e:
+        print(f"Geocoding Error: {e}")
+        return None
+    
 def get_image_exif(file_path):
     exif_data = {"device": "Unknown", "date": None, "location": "Unknown", "raw_gps": None}
     try:
@@ -198,6 +229,26 @@ def get_image_exif(file_path):
         pass
     return exif_data
 
+def process_image_ai(app_obj, image_id):
+    with app_obj.app_context():
+        try:
+            image = ImageModel.query.get(image_id)
+            if not image:
+                print(f"Image {image_id} not found in background task.")
+                return
+            
+            print(f"Starting AI analysis for {image.filename}...")
+            ai_tags = analyze_image(image.file_path)
+            clip_embedding = get_image_embedding(image.file_path)
+            
+            image.ai_tags = ai_tags
+            image.clip_embedding = clip_embedding
+            db.session.commit()
+            print(f"AI analysis finished for {image.filename}")
+        except Exception as e:
+            db.session.rollback()
+            print(f"AI Task Error: {e}")
+
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     data = request.json
@@ -240,10 +291,8 @@ def upload_image(current_user):
         unique_filename = timestamp + filename
         save_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
         
-        # 1. 先保存原始文件
         file.save(save_path)
         
-        # 2. 关键：先提取 Exif 信息（因为后续的 save 会清除 Exif）
         exif = get_image_exif(save_path)
         
         final_loc = exif['location']
@@ -254,38 +303,20 @@ def upload_image(current_user):
             
         capture_date = exif['date'] if exif['date'] else datetime.datetime.now()
 
-        # 3. 图片处理：旋转矫正 + 获取分辨率
         img = Image.open(save_path)
         try:
-            # 根据 Exif 旋转图片
             img = ImageOps.exif_transpose(img)
         except:
             pass
             
-        # 获取旋转后的真实宽高
         img_w, img_h = img.size
         
-        # 覆盖保存矫正后的图片
         img.save(save_path, quality=95)
         
-        # 4. 生成缩略图
         img.thumbnail((300, 300))
         thumb_filename = "thumb_" + unique_filename
         img.save(os.path.join(app.config['UPLOAD_FOLDER'], thumb_filename))
         
-        ai_tags = []
-        try:
-            ai_tags = analyze_image(save_path)
-        except:
-            pass
-            
-        clip_embedding = []
-        try:
-            clip_embedding = get_image_embedding(save_path)
-        except:
-            pass
-
-        # 6. 存入数据库
         new_image = ImageModel(
             user_id=current_user.id,
             filename=unique_filename,
@@ -297,14 +328,18 @@ def upload_image(current_user):
             location=final_loc,
             width=img_w,
             height=img_h,
-            ai_tags=ai_tags,
-            clip_embedding=clip_embedding
+            ai_tags=[],
+            clip_embedding=[]
         )
         db.session.add(new_image)
         db.session.commit()
         
+        thread = threading.Thread(target=process_image_ai, args=(app, new_image.id))
+        thread.start()
+        
         return jsonify({
             'message': 'Upload successful',
+            'id': new_image.id,  
             'filename': unique_filename,
             'thumbnail': thumb_filename,
             'device': exif['device'],
@@ -313,77 +348,134 @@ def upload_image(current_user):
         }), 201
     except Exception as e:
         print(f"Upload Error: {e}")
-        return jsonify({'message': 'Upload failed'}), 500
+        import traceback
+        traceback.print_exc()
+        return jsonify({'message': f'Upload failed: {str(e)}'}), 500
 
 @app.route('/api/images', methods=['GET'])
 @token_required
 def get_user_images(current_user):
     query = request.args.get('q', '').strip()
-    images = ImageModel.query.filter_by(user_id=current_user.id).order_by(ImageModel.capture_date.desc()).all()
-    
-    # 辅助函数：格式化图片数据
-    def format_image(img, score=None):
-        data = {
-            'id': img.id,
-            'filename': img.filename,
-            'thumbnail': img.thumbnail_path,
-            'device': img.device,
-            'capture_date': img.capture_date.strftime('%Y-%m-%d %H:%M:%S') if img.capture_date else None,
-            'location': img.location,
-            'tags': [t.tag_name for t in img.tags],
-            'ai_tags': img.ai_tags,
-            'resolution': f"{img.width}x{img.height}" if img.width else "未知"
-        }
-        if score:
-            data['debug_score'] = f"{score:.3f}"
-        return data
+    page = request.args.get('page', 1, type=int)
+    limit = request.args.get('limit', 20, type=int)
+
+    def format_list(items, has_next):
+        return jsonify({
+            'items': [{
+                'id': img.id,
+                'filename': img.filename,
+                'thumbnail': img.thumbnail_path,
+                'device': img.device,
+                'capture_date': img.capture_date.strftime('%Y-%m-%d %H:%M:%S') if img.capture_date else None,
+                'location': img.location,
+                'tags': [t.tag_name for t in img.tags],
+                'ai_tags': img.ai_tags or [],
+                'resolution': f"{img.width}x{img.height}" if img.width else "未知"
+            } for img in items],
+            'has_next': has_next
+        })
     
     if not query:
-        return jsonify([format_image(img) for img in images]), 200
+        pagination = ImageModel.query.filter_by(user_id=current_user.id)\
+            .order_by(ImageModel.capture_date.desc())\
+            .paginate(page=page, per_page=limit, error_out=False)
+        return format_list(pagination.items, pagination.has_next)
 
-    print(f"DEBUG: Searching for '{query}'...", flush=True)
+    llm_params = extract_search_params(query)
+    search_keywords = llm_params.get('keywords', [query])
+    start_date = llm_params.get('start_date')
+    end_date = llm_params.get('end_date')
+
+    sql_query = ImageModel.query.filter_by(user_id=current_user.id)
+
+    if start_date:
+        try:
+            s_date = datetime.datetime.strptime(start_date, "%Y-%m-%d")
+            sql_query = sql_query.filter(ImageModel.capture_date >= s_date)
+        except:
+            pass
+
+    if end_date:
+        try:
+            e_date = datetime.datetime.strptime(end_date, "%Y-%m-%d")
+            e_date = e_date + datetime.timedelta(days=1)
+            sql_query = sql_query.filter(ImageModel.capture_date < e_date)
+        except:
+            pass
+
+    images = sql_query.all()
     text_vector = get_text_embedding(query)
-    
     scored_images = []
     
     for img in images:
         score = 0
-        basic_match = False
-        
-        if query.lower() in (img.location or "").lower(): basic_match = True
-        if query.lower() in img.filename.lower(): basic_match = True
-        if img.ai_tags:
-            for t in img.ai_tags:
-                if query.lower() in t.get('label', '').lower(): basic_match = True
-        
+
         if img.tags:
             for t in img.tags:
-                if query.lower() in t.tag_name.lower(): 
-                    basic_match = True
-                    score += 0.8  
-                    print(f"DEBUG: '{img.filename}' Hit User Tag '{t.tag_name}'", flush=True)
+                for kw in search_keywords:
+                    if kw.lower() == t.tag_name.lower():
+                        score += 3.0 # 高分
+                        print(f"DEBUG: {img.filename} hit USER TAG: {kw} (+3.0)")
+                        break 
 
-        if basic_match:
-            score += 0.5
-            print(f"DEBUG: '{img.filename}' Hit Basic Match (+0.5)", flush=True)
+        if img.ai_tags:
+            for t in img.ai_tags:
+                label = t.get('label', '').lower()
+                for kw in search_keywords:
+                    if kw.lower() in label:
+                        score += 1.5 # 中等分
+                        print(f"DEBUG: {img.filename} hit AI TAG: {kw} in '{label}' (+1.5)")
+                        break
+
+        location_lower = (img.location or "").lower()
+        filename_lower = img.filename.lower()
+        for kw in search_keywords:
+            hit = False
+            if kw.lower() in location_lower:
+                score += 0.5
+                print(f"DEBUG: {img.filename} hit LOCATION: {kw} (+0.5)")
+                hit = True
             
+            if not hit and kw.lower() in filename_lower:
+                score += 0.5 # 低分
+                print(f"DEBUG: {img.filename} hit FILENAME: {kw} (+0.5)")
+        
         clip_score = 0
         if text_vector and img.clip_embedding:
             dot_product = sum(a * b for a, b in zip(text_vector, img.clip_embedding))
             clip_score = dot_product
-            score += clip_score
-        
-        if clip_score > 0.05 or basic_match:
-            print(f"DEBUG: '{img.filename}' CLIP Score: {clip_score:.4f} | Total: {score:.4f}", flush=True)
-
-        if score > 0.38:  
+            score += clip_score * 2.0
+     
+        if score > 0.8:
             scored_images.append((score, img))
             
     scored_images.sort(key=lambda x: x[0], reverse=True)
     
-    output = [format_image(img, score) for score, img in scored_images]
-    print(f"DEBUG: Found {len(output)} results.", flush=True)
-    return jsonify(output), 200
+    start = (page - 1) * limit
+    end = start + limit
+    sliced_result = [img for score, img in scored_images[start:end]]
+    has_next = len(scored_images) > end
+    
+    return format_list(sliced_result, has_next)
+
+@app.route('/api/images/<int:image_id>', methods=['GET'])
+@token_required
+def get_image_detail(current_user, image_id):
+    img = ImageModel.query.filter_by(id=image_id, user_id=current_user.id).first()
+    if not img:
+        return jsonify({'message': 'Image not found'}), 404
+        
+    return jsonify({
+        'id': img.id,
+        'filename': img.filename,
+        'thumbnail': img.thumbnail_path,
+        'device': img.device,
+        'capture_date': img.capture_date.strftime('%Y-%m-%d %H:%M:%S') if img.capture_date else None,
+        'location': img.location,
+        'tags': [t.tag_name for t in img.tags],
+        'ai_tags': img.ai_tags or [], # 返回 AI 标签
+        'resolution': f"{img.width}x{img.height}" if img.width else "未知"
+    })
 
 @app.route('/api/tags', methods=['POST'])
 @token_required
@@ -458,7 +550,6 @@ def edit_image(current_user, image_id):
 
         img.save(image.file_path, quality=95)
 
-        # 更新数据库中的宽高
         image.width, image.height = img.size
         image.file_size = os.path.getsize(image.file_path)
 

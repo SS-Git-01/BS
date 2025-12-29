@@ -11,3 +11,5 @@ torchvision
 transformers>=4.30.0  
 protobuf              
 tokenizers
+openai
+requests
