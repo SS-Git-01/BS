@@ -11,15 +11,6 @@ MODEL_NAME = "gpt-4o-mini"
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
 def extract_search_params(user_query):
-    """
-    大模型语义分析函数
-    输入: "上个月在海边吃烧烤"
-    输出: {
-        "start_date": "2024-11-01", 
-        "end_date": "2024-11-30", 
-        "keywords": ["海边", "烧烤", "beach", "bbq", "sea", "food"]
-    }
-    """
     now = datetime.datetime.now()
     today_str = now.strftime("%Y-%m-%d")
     weekday_str = now.strftime("%A") 
@@ -38,7 +29,7 @@ def extract_search_params(user_query):
     注意：
     - 如果用户没提时间，日期字段返回 null。
     - 如果用户说 "上周"，请根据今天的日期 ({today_str}) 准确计算出上周一到上周日的日期范围。
-    - 只返回纯 JSON，不要包含 Markdown 格式（如 ```json ... ```）。
+    - 只返回纯 JSON，不要包含 Markdown 格式。
     """
 
     try:
@@ -48,15 +39,32 @@ def extract_search_params(user_query):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_query}
             ],
-            temperature=0.1, 
+            temperature=0.0, 
             response_format={ "type": "json_object" }, 
-            max_tokens=500
+            max_tokens=200
         )
         
         content = response.choices[0].message.content
         clean_content = content.replace("```json", "").replace("```", "").strip()
         params = json.loads(clean_content)
         
+        if isinstance(params, list):
+            if len(params) > 0 and isinstance(params[0], dict):
+                params = params[0]
+            else:
+                params = {
+                    "keywords": params,
+                    "start_date": None,
+                    "end_date": None
+                }
+
+        if not isinstance(params, dict):
+             params = {
+                "keywords": [str(params)],
+                "start_date": None,
+                "end_date": None
+            }
+
         print(f"🔍 LLM Search Intent: {params}")
         return params
 

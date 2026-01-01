@@ -13,6 +13,7 @@ import re
 import math
 import threading
 import requests
+import numpy as np
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
 import json
@@ -129,15 +130,11 @@ def transform_lon(x, y):
     return ret
 
 def wgs84_to_gcj02(lat, lon):
-    """
-    将 GPS 原始坐标 (WGS-84) 转换为 高德/腾讯 地图坐标 (GCJ-02)
-    否则在国内会有几百米的偏移
-    """
     a = 6378245.0
     ee = 0.00669342162296594323
     
     if lon < 72.004 or lon > 137.8347 or lat < 0.8293 or lat > 55.8271:
-        return lat, lon # 不在国内，直接返回
+        return lat, lon
         
     dLat = transform_lat(lon - 105.0, lat - 35.0)
     dLon = transform_lon(lon - 105.0, lat - 35.0)
@@ -232,50 +229,73 @@ def get_image_exif(file_path):
 def process_image_ai(app_obj, image_id):
     with app_obj.app_context():
         try:
-            image = ImageModel.query.get(image_id)
+            image = db.session.get(ImageModel, image_id)
             if not image:
-                print(f"Image {image_id} not found in background task.")
                 return
             
-            print(f"Starting AI analysis for {image.filename}...")
             ai_tags = analyze_image(image.file_path)
             clip_embedding = get_image_embedding(image.file_path)
             
             image.ai_tags = ai_tags
             image.clip_embedding = clip_embedding
             db.session.commit()
-            print(f"AI analysis finished for {image.filename}")
         except Exception as e:
             db.session.rollback()
-            print(f"AI Task Error: {e}")
 
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     data = request.json
-    username, email, password = data.get('username'), data.get('email'), data.get('password')
+    username = data.get('username')
+    email = data.get('email')
+    password = data.get('password')
+
     if not username or not email or not password:
-        return jsonify({"message": "Missing information"}), 400
+        return jsonify({"message": "用户名、邮箱和密码不能为空"}), 400
+
+    if len(username) < 6:
+        return jsonify({"message": "用户名长度不能少于 6 位"}), 400
+
     if len(password) < 6:
-        return jsonify({"message": "Password too short"}), 400
-    if User.query.filter((User.username == username) | (User.email == email)).first():
-        return jsonify({"message": "User already exists"}), 400
-    new_user = User(username=username, email=email, password_hash=generate_password_hash(password))
-    db.session.add(new_user)
-    db.session.commit()
-    return jsonify({"message": "Registration successful"}), 201
+        return jsonify({"message": "密码长度不能少于 6 位"}), 400
+
+    email_regex = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
+    if not re.match(email_regex, email):
+        return jsonify({"message": "邮箱格式不正确"}), 400
+
+    if User.query.filter_by(username=username).first():
+        return jsonify({"message": "该用户名已被注册"}), 400
+
+    if User.query.filter_by(email=email).first():
+        return jsonify({"message": "该邮箱已被使用"}), 400
+
+    try:
+        new_user = User(username=username, email=email, password_hash=generate_password_hash(password))
+        db.session.add(new_user)
+        db.session.commit()
+        return jsonify({"message": "注册成功"}), 201
+    except Exception:
+        db.session.rollback()
+        return jsonify({"message": "系统错误，注册失败"}), 500
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     data = request.json
-    username, password = data.get('username'), data.get('password')
+    username = data.get('username')
+    password = data.get('password')
+
+    if not username or not password:
+        return jsonify({"message": "请输入用户名和密码"}), 400
+
     user = User.query.filter_by(username=username).first()
+
     if user and check_password_hash(user.password_hash, password):
         token = jwt.encode({
             'user_id': user.id,
             'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
         }, app.config['SECRET_KEY'], algorithm="HS256")
-        return jsonify({"token": token, "user_id": user.id, "username": user.username}), 200
-    return jsonify({"message": "Invalid credentials"}), 401
+        return jsonify({"token": token, "user_id": user.id, "username": user.username, "message": "登录成功"}), 200
+
+    return jsonify({"message": "用户名或密码错误"}), 401
 
 @app.route('/api/upload', methods=['POST'])
 @token_required
@@ -313,9 +333,9 @@ def upload_image(current_user):
         
         img.save(save_path, quality=95)
         
-        img.thumbnail((300, 300))
+        img.thumbnail((800, 800), resample=Image.LANCZOS)
         thumb_filename = "thumb_" + unique_filename
-        img.save(os.path.join(app.config['UPLOAD_FOLDER'], thumb_filename))
+        img.save(os.path.join(app.config['UPLOAD_FOLDER'], thumb_filename), quality=95)
         
         new_image = ImageModel(
             user_id=current_user.id,
@@ -347,7 +367,6 @@ def upload_image(current_user):
             'resolution': f"{img_w}x{img_h}"
         }), 201
     except Exception as e:
-        print(f"Upload Error: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'message': f'Upload failed: {str(e)}'}), 500
@@ -355,6 +374,7 @@ def upload_image(current_user):
 @app.route('/api/images', methods=['GET'])
 @token_required
 def get_user_images(current_user):
+
     query = request.args.get('q', '').strip()
     page = request.args.get('page', 1, type=int)
     limit = request.args.get('limit', 20, type=int)
@@ -374,7 +394,7 @@ def get_user_images(current_user):
             } for img in items],
             'has_next': has_next
         })
-    
+
     if not query:
         pagination = ImageModel.query.filter_by(user_id=current_user.id)\
             .order_by(ImageModel.capture_date.desc())\
@@ -382,7 +402,35 @@ def get_user_images(current_user):
         return format_list(pagination.items, pagination.has_next)
 
     llm_params = extract_search_params(query)
-    search_keywords = llm_params.get('keywords', [query])
+
+    if isinstance(llm_params, list) and len(llm_params) > 0 and isinstance(llm_params[0], dict):
+        llm_params = llm_params[0] 
+        
+    elif isinstance(llm_params, list):
+        llm_params = {
+            'keywords': llm_params,
+            'start_date': None,
+            'end_date': None
+        }
+        
+    if not isinstance(llm_params, dict):
+        llm_params = {}
+
+    raw_keywords = llm_params.get('keywords', [])
+    if raw_keywords is None:
+        raw_keywords = []
+    if isinstance(raw_keywords, str):
+        raw_keywords = [raw_keywords]
+        
+    safe_keywords = []
+    for k in raw_keywords:
+        if isinstance(k, (str, int, float)):
+            safe_keywords.append(str(k))
+            
+    if not safe_keywords:
+        safe_keywords = [query]
+
+    search_keywords = list(set(safe_keywords))
     start_date = llm_params.get('start_date')
     end_date = llm_params.get('end_date')
 
@@ -404,58 +452,84 @@ def get_user_images(current_user):
             pass
 
     images = sql_query.all()
+    if not images:
+        return format_list([], False)
+
     text_vector = get_text_embedding(query)
-    scored_images = []
+    
+    img_map = {img.id: img for img in images}
+    valid_imgs = [img for img in images if img.clip_embedding]
+    
+    vector_scores = {}
+    if text_vector and valid_imgs:
+        try:
+            vec_a = np.array(text_vector, dtype=np.float32)
+            norm_a = np.linalg.norm(vec_a)
+            if norm_a > 0:
+                vec_a /= norm_a
+
+            mat_b = np.array([img.clip_embedding for img in valid_imgs], dtype=np.float32)
+            norm_b = np.linalg.norm(mat_b, axis=1, keepdims=True)
+            mat_b = np.divide(mat_b, norm_b, out=np.zeros_like(mat_b), where=norm_b!=0)
+
+            sim_scores = np.dot(mat_b, vec_a)
+            
+            for i, img in enumerate(valid_imgs):
+                vector_scores[img.id] = float(sim_scores[i])
+        except Exception as e:
+            pass
+
+    raw_scored_images = []
     
     for img in images:
-        score = 0
+        final_score = 0.0
+        
+        clip_score = vector_scores.get(img.id, 0.0)
+        final_score += clip_score * 5.0
 
-        if img.tags:
-            for t in img.tags:
-                for kw in search_keywords:
-                    if kw.lower() == t.tag_name.lower():
-                        score += 3.0 # 高分
-                        print(f"DEBUG: {img.filename} hit USER TAG: {kw} (+3.0)")
-                        break 
-
+        img_tags = {t.tag_name.lower() for t in img.tags}
+        ai_labels = set()
         if img.ai_tags:
             for t in img.ai_tags:
-                label = t.get('label', '').lower()
-                for kw in search_keywords:
-                    if kw.lower() in label:
-                        score += 1.5 # 中等分
-                        print(f"DEBUG: {img.filename} hit AI TAG: {kw} in '{label}' (+1.5)")
-                        break
+                if isinstance(t, dict) and 'label' in t:
+                    ai_labels.add(t['label'].lower())
 
-        location_lower = (img.location or "").lower()
-        filename_lower = img.filename.lower()
+        loc_str = (img.location or "").lower()
+        fname_str = img.filename.lower()
+
         for kw in search_keywords:
-            hit = False
-            if kw.lower() in location_lower:
-                score += 0.5
-                print(f"DEBUG: {img.filename} hit LOCATION: {kw} (+0.5)")
-                hit = True
-            
-            if not hit and kw.lower() in filename_lower:
-                score += 0.5 # 低分
-                print(f"DEBUG: {img.filename} hit FILENAME: {kw} (+0.5)")
+            kw_str = str(kw).lower()
+            if kw_str in img_tags:
+                final_score += 2.0
+            elif any(kw_str in label for label in ai_labels):
+                final_score += 1.0
+            elif kw_str in loc_str:
+                final_score += 0.5
+            elif kw_str in fname_str:
+                final_score += 0.3
         
-        clip_score = 0
-        if text_vector and img.clip_embedding:
-            dot_product = sum(a * b for a, b in zip(text_vector, img.clip_embedding))
-            clip_score = dot_product
-            score += clip_score * 2.0
-     
-        if score > 0.8:
-            scored_images.append((score, img))
-            
-    scored_images.sort(key=lambda x: x[0], reverse=True)
+        if final_score > 1.0:
+            raw_scored_images.append((final_score, img))
+
+    raw_scored_images.sort(key=lambda x: x[0], reverse=True)
+
+    final_results = []
+    if raw_scored_images:
+        best_score = raw_scored_images[0][0]
+        
+        cutoff = max(2.0, best_score * 0.8)
+        
+        for score, img in raw_scored_images:
+            if score >= cutoff:
+                final_results.append(img)
+            else:
+                break
     
     start = (page - 1) * limit
     end = start + limit
-    sliced_result = [img for score, img in scored_images[start:end]]
-    has_next = len(scored_images) > end
-    
+    sliced_result = final_results[start:end]
+    has_next = len(final_results) > end
+
     return format_list(sliced_result, has_next)
 
 @app.route('/api/images/<int:image_id>', methods=['GET'])
@@ -473,7 +547,7 @@ def get_image_detail(current_user, image_id):
         'capture_date': img.capture_date.strftime('%Y-%m-%d %H:%M:%S') if img.capture_date else None,
         'location': img.location,
         'tags': [t.tag_name for t in img.tags],
-        'ai_tags': img.ai_tags or [], # 返回 AI 标签
+        'ai_tags': img.ai_tags or [], 
         'resolution': f"{img.width}x{img.height}" if img.width else "未知"
     })
 
@@ -553,8 +627,8 @@ def edit_image(current_user, image_id):
         image.width, image.height = img.size
         image.file_size = os.path.getsize(image.file_path)
 
-        img.thumbnail((300, 300))
-        img.save(os.path.join(app.config['UPLOAD_FOLDER'], image.thumbnail_path))
+        img.thumbnail((800, 800), resample=Image.LANCZOS)
+        img.save(os.path.join(app.config['UPLOAD_FOLDER'], image.thumbnail_path), quality=95)
         
         db.session.commit()
 
@@ -564,7 +638,6 @@ def edit_image(current_user, image_id):
         }), 200
 
     except Exception as e:
-        print(f"Edit Error: {e}")
         return jsonify({'message': 'Failed to process image'}), 500
 
 @app.route('/uploads/<filename>')
