@@ -364,7 +364,8 @@ def upload_image(current_user):
             'thumbnail': thumb_filename,
             'device': exif['device'],
             'location': final_loc,
-            'resolution': f"{img_w}x{img_h}"
+            'resolution': f"{img_w}x{img_h}",
+            'capture_date': capture_date.strftime('%Y-%m-%d %H:%M:%S') if capture_date else None
         }), 201
     except Exception as e:
         import traceback
@@ -634,7 +635,10 @@ def edit_image(current_user, image_id):
 
         return jsonify({
             'message': 'Image edited successfully',
-            'resolution': f"{image.width}x{image.height}"
+            'resolution': f"{image.width}x{image.height}",
+            'device': image.device,
+            'location': image.location,
+            'capture_date': image.capture_date.strftime('%Y-%m-%d %H:%M:%S') if image.capture_date else None
         }), 200
 
     except Exception as e:

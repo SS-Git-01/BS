@@ -550,6 +550,10 @@ const uploadOneFile = async (item) => {
       placeholderImg.id = res.data.id;
       placeholderImg.filename = res.data.filename;
       placeholderImg.thumbnail = res.data.thumbnail;
+      placeholderImg.device = res.data.device;
+      placeholderImg.location = res.data.location;
+      placeholderImg.resolution = res.data.resolution;
+      placeholderImg.capture_date = res.data.capture_date;
       placeholderImg.isTemp = false;
       pollImageStatus(res.data.id);
     }
@@ -713,7 +717,7 @@ const submitEdit = async () => {
   const cropData = cropper.getData(); 
 
   try {
-    await axios.put(`${API_BASE}/images/${currentEditingImage.value.id}/edit`, {
+    const res = await axios.put(`${API_BASE}/images/${currentEditingImage.value.id}/edit`, {
       crop: {
         x: cropData.x,
         y: cropData.y,
@@ -741,8 +745,11 @@ const submitEdit = async () => {
          const rawThumb = targetImg.thumbnail.split('?')[0];
          targetImg.thumbnail = `${rawThumb}?t=${timestamp}`;
       }
+      targetImg.resolution = res.data.resolution;
+      targetImg.device = res.data.device;         
+      targetImg.location = res.data.location;     
+      targetImg.capture_date = res.data.capture_date; 
     }
-
 
   } catch (err) {
     showFailToast('编辑失败');
@@ -785,6 +792,7 @@ onMounted(() => {
   --tag-user-bg: #e6f7ff;
   --input-icon-color: #c0c0c0;
   --search-bar-gray: #f0f1f2;
+  --cropper-stage-bg: #ebedf0;
 }
 
 .van-theme-dark {
@@ -804,6 +812,7 @@ onMounted(() => {
   --tag-user-bg: #1a2a3a;
   --input-icon-color: #666;
   --search-bar-gray: rgba(255, 255, 255, 0.1);
+  --cropper-stage-bg: #333333;
 }
 
 body {
@@ -829,7 +838,7 @@ body {
 }
 
 .editor-container { 
-  background-color: #fff;
+  background-color: var(--card-bg);
   padding: 10px;
   overflow-y: auto;
   max-height: 80vh; 
@@ -840,7 +849,7 @@ body {
   max-height: 500px;
   min-height: 300px;
   width: 100%;
-  background: #ebedf0;
+  background: var(--cropper-stage-bg);
   position: relative; 
   border-radius: 8px;
   overflow: hidden;
@@ -870,6 +879,19 @@ body {
 .controls-area { margin-top: 15px; padding: 0 10px; }
 .control-row { display: flex; align-items: center; margin-bottom: 12px; gap: 10px; font-size: 14px; color: var(--text-main); }
 
+.van-theme-dark .van-dialog {
+  background-color: var(--card-bg) !important;
+}
+
+.van-theme-dark .van-dialog__header {
+  color: var(--text-header) !important;
+}
+
+.van-theme-dark .van-dialog .van-button--default {
+  background-color: transparent !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--border-color) !important;
+}
 </style>
 
 <style scoped>
@@ -957,8 +979,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: auto;   
-  height: 36px;    
+  width: auto;    
+  height: 36px;     
   padding: 0 12px; 
   cursor: pointer;
   border-radius: 18px; 
@@ -1046,8 +1068,8 @@ body {
 
 .login-card {
   position: relative;
-  width: 90%;        
-  max-width: 400px;  
+  width: 90%;
+  max-width: 400px;
   box-sizing: border-box; 
   background: var(--card-bg); 
   backdrop-filter: blur(10px);
@@ -1240,12 +1262,6 @@ body {
 }
 
 @media (max-width: 500px) {
-
-  .login-card {
-    width: 90% !important; 
-    padding: 30px 20px;    
-    box-sizing: border-box; 
-  }
   .custom-header {
     height: auto !important;
     flex-direction: column !important;
@@ -1271,7 +1287,7 @@ body {
     padding: 12px;
     box-sizing: border-box;
     display: grid !important;
-    grid-template-columns: auto 1fr; 
+    grid-template-columns: auto 1fr;
     gap: 12px;
     grid-template-areas: 
       "theme actions"
@@ -1280,11 +1296,11 @@ body {
 
   .theme-btn-inline {
     grid-area: theme; 
-    width: auto;     
+    width: auto;
     height: 36px;
-    padding: 0 10px; 
+    padding: 0 10px;
     background-color: var(--search-bar-gray);
-    border-radius: 18px; 
+    border-radius: 18px;
     margin: 0 !important;
     display: flex;
     align-items: center;
