@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS images (
     file_path VARCHAR(255) NOT NULL,
     thumbnail_path VARCHAR(255),
     file_size INT,
+    width INT,          
+    height INT,         
     upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     device VARCHAR(100),
     capture_date DATETIME,

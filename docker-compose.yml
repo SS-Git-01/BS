@@ -26,7 +26,7 @@ services:
     depends_on:
       - database
     environment:
-      DATABASE_URL: mysql+pymysql://root:root@database/image_project
+      DATABASE_URL: mysql+pymysql://root:root@mysql_container/image_project
       HF_ENDPOINT: https://hf-mirror.com
 
   frontend:
