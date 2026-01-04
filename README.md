@@ -49,7 +49,7 @@ BS/
 ```bash
 docker-compose up --build
 ```
-
+**注意：首次启动时下载各种python库等需要很长的时间，且下载完后，前端、后端的首次启动可能也需要几分钟，请耐心等待。**
 后续再次启动只需输入：
 ```bash
 docker-compose up 
