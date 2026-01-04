@@ -6,8 +6,8 @@ mcp = FastMCP("CloudAlbum")
 
 API_BASE = "http://localhost:5000/api"
 
-USERNAME = "test"
-PASSWORD = "123456"
+USERNAME = "" #请在""内输入账号
+PASSWORD = "" #请在""内输入密码
 
 _cached_token = None
 
